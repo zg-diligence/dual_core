@@ -1,0 +1,104 @@
+1.RT-Thread是一款有中国开源社区主导开发的嵌入式实时操作系统，包含嵌入式实时系统相关的各个组件：TCP/IP协议栈、文件系统、POSIX接口、图形界面、USB等，其硬实时核心主要采用C代码编写，具备高度可定制性，此外RT-Thread采用基于优先级的抢占式多线程调度。
+
+2.Buildroot
+Buildroot是嵌入式开发领域中一个成套的嵌入式开发环境，通过交叉编译，buildroot大大简化了制作一个完整的嵌入式linux开发系统的流程。
+Buildroot可以生成交叉编译工具链、根文件系统、linux内核镜像以及buildloader等，当然也可以独立生成其中某些组合项，比如你可以利用现有的交叉编译工具制作你自己的根文件系统。此外，buildroot支持Power PC、MIPS、ARM等硬件平台，在嵌入式领域应用非常广泛。
+
+3.IPI中断机制
+	多核多线程处理器的中断由 PIC(Programmable Interrupt Controller）统一控制。
+	PIC 允许一个硬件线程中断其他的硬件线程，这种方式被称为核间中断(Inter-Processor Interrupts，IPI）。
+	PIC 拥有一个宽度为 32 位的核间中断寄存器IPIBase，该寄存器包含目的线程的编号、中断向量及中断类型(是否中断多个硬件线程）等内容。核间中断可以通过向这个寄存器写入需要的值来产生。若硬件线程A想要发送一个核间中断给硬件线程B，它只需要向寄存器IPIBase中写入B的Thread ID、中断向量、中断类型等值就可以了，PIC会通知B所在的核挂起它当前的执行序列，并根据中断向量跳转到中断服务例程ISR的入口。
+	使用IPI进行核间通信的关键在于要利用中断服务例程ISR去读取一个事先约好的共享内存区域。发起方首先将消息写到一块共享内存中，然后发起核间中断。被中断的硬件线程在中断服务例程中读取该内存，以获得发起方通知的消息。为防止多核间的竞争导致消息被改写，使用这种方式必须利用锁机制来确保消息的完整性。
+
+4.WFI和WFE模式
+WFI 表示 Wait for Interrupt（等待中断），WFE 表示 Wait for Event（等待事件）。这两个指令允许核进入低功耗模式和停止执行代码。
+
+5.pic2 RT-Thread实时操作系统构架
+
+6.pic6 Gemini系统架构
+
+7.内存空间分配
+	1.0x6000 0000 - 0x7000 0000 Linux + RTT		256M
+	2.0x6000 0000 - 0x6F80 0000 Linux			248M
+	3.0x6F80 0000 - 0x6FA0 0000 VBUS			2M
+	4.0x6FB0 0000 - 0x6FC0 0000 boot.bin		1M
+	5.0X6FC0 0000 - 0x7000 0000 rtthread.bin  	4M
+
+8.双核双系统系统基本步骤
+	1.加载boot.bin到0x6FB00000
+	2.加载rtthread.bin到0x6FC00000
+	3.cpu_down拔出CPU#1，进入WFI模式
+	4.配置好CPU#1启动地址，发送IPI中断，唤醒CPU#1
+
+9.linux kernel补丁文件部分
+	mm/init.c	保留顶端8M内存地址
+	mm/mmu.c	对顶端8M内存地址创建为可执行区域
+	arm/kernel/smp.c	能够挂接一个IPI中断处理、能够发送IPI中断到其它处理器
+	arch/arm/mach-vexpress/platsmp.c	发送IPI中断唤醒CPU#1
+	drivers/mfd/vexpress-sysreg.c		获取处理器boot address
+	arch/arm/mach-vexpress/hotplug.c 	简单验证CPU#1进入WFI到再次唤醒
+
+10.系统间通讯 -- VBUS
+	1.VBUS配置
+	目录位置 vexpress/drivers/vbus_conf.h
+	共享内存空间 基地址 0x6F800000 大小 2M
+	发送中断 RT_VBUS_GUEST_VIRQ
+	接收中断 RT_VBUS_HOST_VIRQ
+
+	2.RT-Thread侧VBUS
+		目录位置 rt-thread/components/vbus	打开组件 RT_USING_VBUS
+		目录位置 vexpress/applications/vbus_echo.c
+
+	3.Linux侧VBUS
+		目录位置 linux-apps/vecho.c
+
+	4.系统间通讯 VBus
+	VBus是建立在环形缓冲区上的一个组件，用于高效的进行系统间通讯
+		支持QoS机制，保证关键数据及时送达
+		支持多路复用，可以在一条VBus上实现多种功能
+		直接使用device接口和文件接口，方便易用
+		Linux侧支持用户态驱动程序，可靠性高
+	
+	Linux用户态程序可以像操作普通文件一样来通过VBus来进行通讯，支持常规的open/read/write/close等基本操作
+	RT-Thread程序可以像操作普通设备一样通过VBus来通讯，rt_device{open/read/write/close}
+	
+	VBus的数据发送和接收
+	
+	附注：
+		1. Qos，指一个网络能够利用各种基础技术，为指定的网络通信提供更好的服务能力, 是网络的一种安全机制，是用来解决网络延迟和阻塞等问题的一种技术
+
+		2. TCP/IP 互联网协议族一个网络通信模型，为互联网的基础通信架构，简称TCP/IP。TCP/IP提供点对点的链接机制，将数据应该如何封装、定址、传输、路由以及在目的地如何接收，都加以标准化。
+
+11.pic21 VBUS及VBUS上的分布式组件
+
+
+12.cpu_down的过程
+	1. ”cpu_down” (in kernel/cpu.c)
+		１．调用cpu_maps_update_begin，设定Mutex Lock “cpu_add_remove_lock”
+		２．确认cpu_hotplug_disabled是否有被设定
+		3. 调用 _cpu_down(cpu， 0)
+		4. 调用cpu_maps_update_done，释放Mutex Lock “cpu_add_remove_lock”
+
+	2.”_cpu_down” (in kernel/cpu.c)
+		1. 调用num_online_cpus，确认如果目前Online的处理器只有一个，会直接返回错误
+		2. 调用cpu_online，如果该CPU并非Online状态，就返回错误
+		3. 调用cpu_hotplug_begin，取得Mutex Lock “cpu_hotplug.lock”.
+		4. 调用__cpu_notify，通过__raw_notifier_call_chain，通知CPU Chain中的处理器，
+			 目前正在进行Online动作的处理器状态为”CPU_DOWN_PREPARE”.
+		5. 调用函数__stop_machine
+		6. 通过BUG_ON(cpu_online(cpu))，确认要停止的处理器，是否已经处于Offline的状态，若还是在Online状态就会导致Kernel Panic.
+		7. 调用函数idle_cpu (in kernel/shced.c)，确认要Offline处理器是否正在执行idle task.
+			若该处理器不是正在执行Idle Task，就会调用cpu_relax，直到确认要Offline的处理器是处于Idle Task中.
+		8. 调用__cpu_die(cpu)
+		9. 调用cpu_notify_nofail，通知完成Offline动作的处理器状态为”CPU_DEAD”.
+		10. 调用check_for_tasks，确认目前是否还有Tasks在被停止的处理器上，若有就会Printk出警告讯息.
+		11. 调用cpu_hotplug_done，设定Active Write为NULL，释放Mutex Lock “cpu_hotplug.lock”.
+
+	3，”__cpu_die” (in arch/arm/kernel/smp.c)
+		1. 执行函数wait_for_completion_timeout，等待函数cpu_die 通过函数complete设定“Completion”给 cpu_died物件，
+			如果cpu_died物件有设定完成或是TimeOut就会继续往后执行.
+		2. 调用platform_cpu_kill
+		3. 而CPU Idle Task在执行cpu_die后，就会进入函数platform_cpu_die (arch/arm/mach-vexpress/hotplug.c)，
+			并通过platform_do_lowpower，让处理器处于WFI Low Power的状态，等待下一次的唤醒.
+		4. 若处理器重新被唤醒，就会执行函数secondary_start_kernel (in arch/arm/kernel/smp.c)，重新执行初始化流程.
+

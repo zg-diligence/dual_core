@@ -1,0 +1,18 @@
+工具准备
+	./prepare.sh
+	
+环境变量
+	source var_path.sh
+	
+编译源码
+	./build.sh
+
+测试运行
+	cd extra_folder	
+	
+	./run_linux.sh
+	
+	./run_rtt.sh（另开窗口）
+
+注意事项
+	编译前需要更改相关项目路径，包括var_path.sh、buildroot_config文件

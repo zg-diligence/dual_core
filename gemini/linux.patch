@@ -1,0 +1,238 @@
+diff -uNr linux-3.18.16/arch/arm/kernel/smp.c linux-3.18/arch/arm/kernel/smp.c
+--- linux-3.18.16/arch/arm/kernel/smp.c	2015-06-15 00:19:31.000000000 +0800
++++ linux-3.18/arch/arm/kernel/smp.c	2018-01-14 08:32:58.613372684 +0800
+@@ -63,6 +63,10 @@
+  */
+ volatile int pen_release = -1;
+ 
++/* added code 1 */
++typedef int (*smp_ipi_handler_t)(int irq, void *devid);
++static smp_ipi_handler_t _smp_ipi_handler = NULL;
++
+ enum ipi_msg_type {
+ 	IPI_WAKEUP,
+ 	IPI_TIMER,
+@@ -225,7 +229,7 @@
+ 		pr_err("CPU%u: cpu didn't die\n", cpu);
+ 		return;
+ 	}
+-	printk(KERN_NOTICE "CPU%u: shutdown\n", cpu);
++	printk(KERN_NOTICE "CPU#%u: shutdown\n\n", cpu);
+ 
+ 	/*
+ 	 * platform_cpu_kill() is generally expected to do the powering off
+@@ -459,11 +463,19 @@
+ };
+ 
+ static void smp_cross_call(const struct cpumask *target, unsigned int ipinr)
+-{
++{		
+ 	trace_ipi_raise(target, ipi_types[ipinr]);
+ 	__smp_cross_call(target, ipinr);
+ }
+ 
++/* added code 2 挂接ipi中断处理 */
++void smp_set_ipi_handler(smp_ipi_handler_t handler)
++{
++	_smp_ipi_handler = handler;
++}
++EXPORT_SYMBOL(smp_set_ipi_handler);
++
++
+ void show_ipi_list(struct seq_file *p, int prec)
+ {
+ 	unsigned int cpu, i;
+@@ -505,6 +517,15 @@
+ 	smp_cross_call(cpumask_of(cpu), IPI_CALL_FUNC_SINGLE);
+ }
+ 
++
++/* added code 3 发送IPI中断到其它处理器 */
++void arch_send_ipi(int cpu, int ipi)
++{
++	smp_cross_call(cpumask_of(cpu), ipi);
++}
++EXPORT_SYMBOL(arch_send_ipi);
++
++
+ #ifdef CONFIG_IRQ_WORK
+ void arch_irq_work_raise(void)
+ {
+@@ -624,8 +645,17 @@
+ 		break;
+ 
+ 	default:
+-		printk(KERN_CRIT "CPU%u: Unknown IPI message 0x%x\n",
+-		       cpu, ipinr);
++		/* added code 4 */
++		if (_smp_ipi_handler != NULL)
++		{
++			irq_enter();
++			_smp_ipi_handler(ipinr, NULL);
++			irq_exit();
++		}
++
++		
++		// printk(KERN_CRIT "CPU%u: Unknown IPI message 0x%x\n",
++		//       cpu, ipinr);
+ 		break;
+ 	}
+ 
+diff -uNr linux-3.18.16/arch/arm/mach-vexpress/hotplug.c linux-3.18/arch/arm/mach-vexpress/hotplug.c
+--- linux-3.18.16/arch/arm/mach-vexpress/hotplug.c	2015-06-15 00:19:31.000000000 +0800
++++ linux-3.18/arch/arm/mach-vexpress/hotplug.c	2018-01-07 21:40:19.376665297 +0800
+@@ -14,6 +14,7 @@
+ 
+ #include <asm/smp_plat.h>
+ #include <asm/cp15.h>
++#include <asm/io.h>
+ 
+ static inline void cpu_enter_lowpower(void)
+ {
+@@ -87,19 +88,42 @@
+  */
+ void __ref vexpress_cpu_die(unsigned int cpu)
+ {
++	/* added code */
++	extern u32 vexpress_flags_get(void);
++	typedef void (*func_t)(void);
++
++	
+ 	int spurious = 0;
+ 
++	/* added code */
++	pr_info("\noriginal boot address is 0x%08x", vexpress_flags_get()); /* 打印CPU#1之前的启动地址 */
++
++	pen_release = cpu_logical_map(cpu);	/* ??? */
++
++
+ 	/*
+ 	 * we're ready for shutdown now, so do it
+ 	 */
+-	cpu_enter_lowpower();
+-	platform_do_lowpower(cpu, &spurious);
++	cpu_enter_lowpower();					/* 进入低功耗模式 */
++	platform_do_lowpower(cpu, &spurious);	/* 低功耗模式等待唤醒 */
++
+ 
+ 	/*
+ 	 * bring this CPU back into the world of cache
+ 	 * coherency, and then restore interrupts
+ 	 */
+-	cpu_leave_lowpower();
++	cpu_leave_lowpower();					/* 退出低功耗模式 */
++	
++	
++	/* added code */
++	pr_info("\ncurrent boot address is 0x%08x", vexpress_flags_get()); /* 打印CPU#1当前的启动地址 */
++	pr_info("CPU#1 starts with RT-Thread!\n");
++	
++	/* added code */	
++	func_t func;
++	func = (func_t)__phys_to_virt(0x6FB00000);
++	asm volatile("  cpsid i\n" :::);
++	func();
+ 
+ 	if (spurious)
+ 		pr_warn("CPU%u: %u spurious wakeup calls\n", cpu, spurious);
+diff -uNr linux-3.18.16/arch/arm/mach-vexpress/platsmp.c linux-3.18/arch/arm/mach-vexpress/platsmp.c
+--- linux-3.18.16/arch/arm/mach-vexpress/platsmp.c	2015-06-15 00:19:31.000000000 +0800
++++ linux-3.18/arch/arm/mach-vexpress/platsmp.c	2018-01-07 21:57:09.232019734 +0800
+@@ -25,6 +25,23 @@
+ 
+ #include "core.h"
+ 
++/* set boot address，wake up the given cpu */
++int vexpress_cpun_start(u32 address, int cpu)
++{
++	extern u32 vexpress_flags_get(void);
++
++	/* unused code , tell me why */
++	vexpress_flags_set((address));   			/* 设置CPU#1启动地址 */
++	flush_cache_all();
++  	smp_wmb();
++
++  	printk("send wakeip ipi mask\n");
++  	arch_send_wakeup_ipi_mask(cpumask_of(cpu));	/* 发送IPI中断唤醒CPU#1 */
++
++	return 0;
++}
++EXPORT_SYMBOL(vexpress_cpun_start);
++
+ /*
+  * Initialise the CPU possible map early - this describes the CPUs
+  * which may be present or become present in the system.
+diff -uNr linux-3.18.16/arch/arm/mm/init.c linux-3.18/arch/arm/mm/init.c
+--- linux-3.18.16/arch/arm/mm/init.c	2015-06-15 00:19:31.000000000 +0800
++++ linux-3.18/arch/arm/mm/init.c	2018-01-06 12:33:10.319224000 +0800
+@@ -310,6 +310,10 @@
+ 	}
+ #endif
+ 
++	/* reserve RT-Thread space */
++	{
++		memblock_reserve(0x6F800000, 8 * 1024 * 1024);
++	}
+ 	arm_mm_memblock_reserve();
+ 
+ 	/* reserve any platform specific memblock areas */
+diff -uNr linux-3.18.16/arch/arm/mm/mmu.c linux-3.18/arch/arm/mm/mmu.c
+--- linux-3.18.16/arch/arm/mm/mmu.c	2015-06-15 00:19:31.000000000 +0800
++++ linux-3.18/arch/arm/mm/mmu.c	2018-01-06 12:33:10.323224000 +0800
+@@ -1299,6 +1299,19 @@
+ 	map.type = MT_LOW_VECTORS;
+ 	create_mapping(&map);
+ 
++	/* create a executable mapping */
++	{
++		#define RTT_BASE		0x6F800000
++		#define RTT_SIZE		(8 * 1024 * 1024)
++
++		map.pfn = __phys_to_pfn(RTT_BASE);
++		map.virtual = __phys_to_virt(RTT_BASE);
++		map.length = RTT_SIZE;
++		map.type = MT_MEMORY_RWX;
++
++		create_mapping(&map);
++	}
++
+ 	/*
+ 	 * Ask the machine support to map in the statically mapped devices.
+ 	 */
+diff -uNr linux-3.18.16/build.sh linux-3.18/build.sh
+--- linux-3.18.16/build.sh	1970-01-01 08:00:00.000000000 +0800
++++ linux-3.18/build.sh	2018-01-07 22:09:07.773468794 +0800
+@@ -0,0 +1,14 @@
++##### 在linux源码根目录文件夹下运行 #####
++
++# 编译linux内核
++export ARCH=arm  			# 指定核心类型
++export CROSS_COMPILE=arm-linux-gnueabi- # 指定交叉编译前缀
++make vexpress_defconfig			# 使用预配置文件
++make zImage dtbs modules -j8		# 编译
++
++
++# 拷贝生成的ZImag、dtbs、.config文件到单独的文件夹中
++mkdir -p extra_folder
++cp arch/arm/boot/zImage extra_folder/
++cp arch/arm/boot/dts/*ca9.dtb extra_folder/
++cp .config  extra_folder/
+diff -uNr linux-3.18.16/drivers/mfd/vexpress-sysreg.c linux-3.18/drivers/mfd/vexpress-sysreg.c
+--- linux-3.18.16/drivers/mfd/vexpress-sysreg.c	2015-06-15 00:19:31.000000000 +0800
++++ linux-3.18/drivers/mfd/vexpress-sysreg.c	2018-01-06 12:33:10.323224000 +0800
+@@ -84,6 +84,15 @@
+ 	writel(data, vexpress_sysreg_base() + SYS_FLAGSSET);
+ }
+ 
++u32 vexpress_flags_get(void)
++{
++    u32 value;
++    
++    value = readl(vexpress_sysreg_base() + SYS_FLAGSSET);
++    
++    return value;
++}
++
+ unsigned int vexpress_get_mci_cardin(struct device *dev)
+ {
+ 	return readl(vexpress_sysreg_base() + SYS_MCI) & SYS_MCI_CARDIN;

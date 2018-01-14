@@ -1,0 +1,12 @@
+
+	工具准备
+		./prepare.sh
+		
+	编译源码
+		./build.sh
+	
+	仿真运行
+		./run_linux.sh	qemu直接运行Linux 4.4.1
+		./run_uboot.sh	qemu通过uboot启动Linux 4.4.1
+		./run_rtt.sh	qemu仿真运行RT-Thread 3.0.0
+
