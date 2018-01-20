@@ -14,6 +14,8 @@ sudo apt-get -y install scons libncurses5-dev zip bc texinfo
 tar Jxvf packages/linux-3.18.16.tar.xz
 tar jxvf packages/buildroot-2015.05.tar.bz2
 tar Jxvf packages/gcc-linaro-4.9-2014.11-x86_64_arm-linux-gnueabi.tar.xz
+
+mkdir -p buildroot-2015.05/dl
 cp packages/dl/* buildroot-2015.05/dl
 
 cd linux-3.18.16
